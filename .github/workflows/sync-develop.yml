@@ -1,0 +1,116 @@
+name: Auto-sync develop from master
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  sync-develop:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Attempt merge master into develop
+        id: merge
+        continue-on-error: true
+        run: |
+          git fetch origin master
+          echo "Merging master into develop..."
+
+          if git merge origin/master -m "chore: auto-sync develop with master [skip ci]"; then
+            echo "merge_status=success" >> $GITHUB_OUTPUT
+            git push origin develop
+            echo "✅ Merge successful and pushed to develop"
+          else
+            echo "merge_status=conflict" >> $GITHUB_OUTPUT
+            echo "❌ Merge conflicts detected"
+            echo "Conflicting files:"
+            git diff --name-only --diff-filter=U
+            exit 1
+          fi
+
+      - name: Create detailed issue on conflict
+        if: steps.merge.outputs.merge_status == 'conflict'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const conflictInfo = `## 🔴 Auto-sync Conflict Detected
+
+            The automatic sync from \`master\` to \`develop\` has failed due to merge conflicts.
+
+            ### What happened?
+            - A PR was merged to \`master\`
+            - GitHub Action tried to merge \`master\` into \`develop\`
+            - Merge conflicts were detected
+
+            ### Possible causes:
+            1. ⚠️ Feature branch was modified after merging to develop but before merging to master
+            2. ⚠️ Different conflict resolutions in develop vs master
+            3. ⚠️ Someone pushed directly to develop (violates workflow)
+
+            ### How to fix:
+
+            \`\`\`bash
+            # 1. Clone and checkout develop
+            git checkout develop
+            git pull origin develop
+
+            # 2. Try to merge master
+            git fetch origin master
+            git merge origin/master
+
+            # 3. Resolve conflicts in affected files
+            git status  # See conflicting files
+            # Edit files to resolve conflicts
+            git add .
+            git commit -m "fix: resolve auto-sync conflicts from master"
+
+            # 4. Push to develop
+            git push origin develop
+            \`\`\`
+
+            ### Prevention:
+            - ✅ Don't modify feature branches after merging to develop
+            - ✅ Create PR to master immediately after staging tests
+            - ✅ Never push directly to develop
+
+            **Triggered by:** ${context.payload.head_commit.message}
+            **Commit:** ${context.sha}
+            **Author:** ${context.payload.head_commit.author.name}
+            `;
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🔴 Auto-sync Conflict: develop ← master',
+              body: conflictInfo,
+              labels: ['infrastructure', 'urgent', 'merge-conflict'],
+              assignees: [context.payload.head_commit.author.username].filter(Boolean)
+            });
+
+      - name: Notify on other failures
+        if: failure() && steps.merge.outputs.merge_status != 'conflict'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '⚠️ Develop sync failed (non-conflict error)',
+              body: `Auto-sync from master to develop failed due to an unexpected error.
+
+              Check the [workflow run](${context.payload.repository.html_url}/actions/runs/${context.runId}) for details.`,
+              labels: ['infrastructure', 'urgent']
+            });
