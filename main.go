@@ -19,6 +19,7 @@ func main() {
 
 	// Health check endpoint
 	mux.HandleFunc("/health", handlers.HealthCheck)
+	mux.HandleFunc("/health-check", handlers.HealthCheck)
 
 	// API endpoints
 	mux.HandleFunc("/api/v1/items", handlers.GetItems)
